@@ -1,35 +1,38 @@
-name: Deploy to AWS via Bastion
+name: deploy
 
 on:
   push:
-    branches: [ "main" ]
+    branches:
+      - main
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Prepare SSH key
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/ci-key
-          chmod 600 ~/.ssh/ci-key
+          echo "${{ secrets.AWS_SSH_PRIVATE_KEY }}" > ~/.ssh/aws-key.pem
+          chmod 600 ~/.ssh/aws-key.pem
+
+      - name: Debug bastion host
+        run: echo "Bastion host is: ${{ secrets.BASTION_HOST }}"
 
       - name: Add bastion to known_hosts
         run: ssh-keyscan -H ${{ secrets.BASTION_HOST }} >> ~/.ssh/known_hosts
 
-      - name: SSH into Bastion and deploy on Private EC2
+      - name: SSH into Bastion and deploy to Private EC2
         run: |
-          ssh -i ~/.ssh/ci-key -o StrictHostKeyChecking=no \
-            ${{ secrets.SSH_USERNAME }}@${{ secrets.BASTION_HOST }} "
-              # از روی Bastion با کلید داخلی خودش به سرور خصوصی وصل می‌شویم
-              ssh -o StrictHostKeyChecking=no -i ~/.ssh/aws-key ubuntu@${{ secrets.PRIVATE_EC2_IP }} '
-                cd ~/flask-app &&
-                git pull origin main &&
-                docker compose down &&
-                docker compose up -d --build
-              '
-            "
+          ssh -i ~/.ssh/aws-key.pem -o StrictHostKeyChecking=no ubuntu@${{ secrets.BASTION_HOST }} << 'EOF'
+            echo "✅ Connected to Bastion"
+            ssh -i ~/.ssh/aws-key ubuntu@${{ secrets.PRIVATE_EC2_IP }} << 'INNER'
+              cd ~/flask-app
+              sudo docker compose down
+              sudo docker compose up -d --build
+              echo "🚀 Deployment done successfully!"
+            INNER
+          EOF
