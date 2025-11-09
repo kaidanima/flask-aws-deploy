@@ -16,25 +16,21 @@ jobs:
       - name: Prepare SSH key
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.AWS_SSH_PRIVATE_KEY }}" > ~/.ssh/aws-key.pem
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/aws-key.pem
           chmod 600 ~/.ssh/aws-key.pem
 
       - name: Debug bastion host
-        run: |
-          echo "Bastion host is: ${{ secrets.BASTION_HOST }}"
+        run: echo "Bastion host is: ${{ secrets.BASTION_PUBLIC_IP }}"
 
       - name: Add bastion to known_hosts
-        run: |
-          ssh-keyscan -H "${{ secrets.BASTION_HOST }}" >> ~/.ssh/known_hosts
+        run: ssh-keyscan -H ${{ secrets.BASTION_PUBLIC_IP }} >> ~/.ssh/known_hosts
 
       - name: SSH into Bastion and deploy to Private EC2
         run: |
-          ssh -i ~/.ssh/aws-key.pem -o StrictHostKeyChecking=no ubuntu@${{ secrets.BASTION_HOST }} << 'EOF'
-            echo "✅ Connected to Bastion"
-            ssh -i ~/.ssh/aws-key ubuntu@${{ secrets.PRIVATE_EC2_IP }} << 'INNER'
+          ssh -i ~/.ssh/aws-key.pem -o StrictHostKeyChecking=no ${{ secrets.SSH_USER_NAME }}@${{ secrets.BASTION_PUBLIC_IP }} << 'EOF'
+            ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER_NAME }}@${{ secrets.PRIVATE_EC2_IP }} << 'INNER_EOF'
               cd ~/flask-app
-              sudo docker compose down
-              sudo docker compose up -d --build
-              echo "🚀 Deployment done successfully!"
-            INNER
+              docker compose down
+              docker compose up -d --build
+            INNER_EOF
           EOF
