@@ -11,8 +11,8 @@ jobs:
     environment: production
 
     env:
-      SSH_USER: ${{ secrets.SSH_USER }}             # e.g. ubuntu
-      SSH_HOST: ${{ secrets.SSH_HOST }}             # e.g. 3.239.171.243
+      SSH_USER: ${{ secrets.SSH_USER }}         # ubuntu
+      SSH_HOST: ${{ secrets.SSH_HOST }}         # 3.239.171.243
       APP_DIR: "/home/${{ secrets.SSH_USER }}/flask-app"
       BRANCH: "main"
 
@@ -20,45 +20,47 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup SSH
+      - name: Prepare SSH key
         run: |
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          # Write key safely, preserving newlines
+          printf "%s" "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          # In case the secret got CRLF, strip CR
+          tr -d '\r' < ~/.ssh/id_rsa > ~/.ssh/id_rsa.clean && mv ~/.ssh/id_rsa.clean ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H "${SSH_HOST}" >> ~/.ssh/known_hosts 2>/dev/null || true
+          ssh-keygen -y -f ~/.ssh/id_rsa >/dev/null 2>&1 || { echo "Invalid SSH_PRIVATE_KEY"; exit 1; }
+
+      - name: Add known_hosts
+        run: |
+          ssh-keyscan -T 5 -H "${SSH_HOST}" >> ~/.ssh/known_hosts 2>/dev/null || true
           chmod 644 ~/.ssh/known_hosts
 
-      - name: Test SSH connection
+      - name: Network check to port 22
         run: |
-          ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+          echo "Checking TCP connectivity to ${SSH_HOST}:22"
+          if command -v nc >/dev/null; then
+            nc -vz -w 5 "${SSH_HOST}" 22 || true
+          fi
+          if command -v timeout >/dev/null; then
+            timeout 5 bash -lc '>/dev/tcp/'"${SSH_HOST}"'/22' && echo "tcp check ok" || echo "tcp check failed"
+          fi
+          echo "ICMP ping (may be blocked):"
+          ping -c 2 -W 2 "${SSH_HOST}" || true
+
+      - name: Test SSH connection (verbose)
+        run: |
+          set -x
+          ssh -vvv -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
             "${SSH_USER}@${SSH_HOST}" 'echo "SSH OK on $(hostname)"'
 
-      - name: Deploy on server
-        run: |
-          ssh "${SSH_USER}@${SSH_HOST}" bash -lc '
-            set -euo pipefail
-            cd "${APP_DIR}"
-            if [ ! -d .git ]; then
-              echo "Repo not found at ${APP_DIR}, cloning..."
-              git clone "${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY}" "${APP_DIR}" || true
-              cd "${APP_DIR}"
-            fi
-            git fetch --all --prune
-            git reset --hard "origin/${BRANCH}"
-
-            # Python virtualenv example:
-            # if [ ! -d .venv ]; then python3 -m venv .venv; fi
-            # source .venv/bin/activate
-            # pip install -U pip
-            # pip install -r requirements.txt
-
-            # systemd example:
-            # sudo systemctl daemon-reload
-            # sudo systemctl restart flask-app.service
-            # sudo systemctl --no-pager -l status flask-app.service
-
-            # Docker example:
-            # docker compose pull
-            # docker compose up -d --remove-orphans
-          '
+      # Your actual deploy steps (git pull / systemd or docker) go here if the test passes:
+      # - name: Deploy on server
+      #   run: |
+      #     ssh "${SSH_USER}@${SSH_HOST}" bash -lc '
+      #       set -euo pipefail
+      #       cd "${APP_DIR}"
+      #       git fetch --all --prune
+      #       git reset --hard "origin/${BRANCH}"
+      #       # systemd or docker steps...
+      #     '
