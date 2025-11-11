@@ -1,66 +1,43 @@
-name: Deploy
+name: deploy
 
 on:
   push:
-    branches: [ "main" ]
-  workflow_dispatch:
+    branches:
+      - main
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment: production
-
-    env:
-      SSH_USER: ${{ secrets.SSH_USER }}         # ubuntu
-      SSH_HOST: ${{ secrets.SSH_HOST }}         # 3.239.171.243
-      APP_DIR: "/home/${{ secrets.SSH_USER }}/flask-app"
-      BRANCH: "main"
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Prepare SSH key
+      - name: Prepare SSH key on runner
         run: |
           mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-          # Write key safely, preserving newlines
-          printf "%s" "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
-          # In case the secret got CRLF, strip CR
-          tr -d '\r' < ~/.ssh/id_rsa > ~/.ssh/id_rsa.clean && mv ~/.ssh/id_rsa.clean ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          ssh-keygen -y -f ~/.ssh/id_rsa >/dev/null 2>&1 || { echo "Invalid SSH_PRIVATE_KEY"; exit 1; }
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/ci-deploy
+          chmod 600 ~/.ssh/ci-deploy
 
-      - name: Add known_hosts
+      - name: Add Bastion to known_hosts
         run: |
-          ssh-keyscan -T 5 -H "${SSH_HOST}" >> ~/.ssh/known_hosts 2>/dev/null || true
-          chmod 644 ~/.ssh/known_hosts
+          ssh-keyscan -H ${{ secrets.BASTION_PUBLIC_IP }} >> ~/.ssh/known_hosts
 
-      - name: Network check to port 22
+      - name: Copy CI key to Bastion
         run: |
-          echo "Checking TCP connectivity to ${SSH_HOST}:22"
-          if command -v nc >/dev/null; then
-            nc -vz -w 5 "${SSH_HOST}" 22 || true
-          fi
-          if command -v timeout >/dev/null; then
-            timeout 5 bash -lc '>/dev/tcp/'"${SSH_HOST}"'/22' && echo "tcp check ok" || echo "tcp check failed"
-          fi
-          echo "ICMP ping (may be blocked):"
-          ping -c 2 -W 2 "${SSH_HOST}" || true
+          scp -i ~/.ssh/ci-deploy -o StrictHostKeyChecking=no ~/.ssh/ci-deploy ${{ secrets.SSH_USER }}@${{ secrets.BASTION_PUBLIC_IP }}:/home/${{ secrets.SSH_USER }}/.ssh/ci-deploy
+          ssh  -i ~/.ssh/ci-deploy -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.BASTION_PUBLIC_IP }} "chmod 600 ~/.ssh/ci-deploy"
 
-      - name: Test SSH connection (verbose)
+      - name: SSH into Bastion and deploy to Private EC2
         run: |
-          set -x
-          ssh -vvv -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
-            "${SSH_USER}@${SSH_HOST}" 'echo "SSH OK on $(hostname)"'
-
-      # Your actual deploy steps (git pull / systemd or docker) go here if the test passes:
-      # - name: Deploy on server
-      #   run: |
-      #     ssh "${SSH_USER}@${SSH_HOST}" bash -lc '
-      #       set -euo pipefail
-      #       cd "${APP_DIR}"
-      #       git fetch --all --prune
-      #       git reset --hard "origin/${BRANCH}"
-      #       # systemd or docker steps...
-      #     '
+          ssh -i ~/.ssh/ci-deploy -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.BASTION_PUBLIC_IP }} << 'EOF'
+            set -e
+            echo "✅ Connected to Bastion"
+            ssh -i ~/.ssh/ci-deploy -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.PRIVATE_EC2_IP }} << 'INNER_EOF'
+              set -e
+              cd ~/flask-app
+              docker compose down || true
+              docker compose up -d --build
+              echo "🚀 Deployment done."
+            INNER_EOF
+          EOF
