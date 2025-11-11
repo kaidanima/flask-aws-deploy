@@ -1,34 +1,64 @@
-name: deploy
+name: Deploy
 
 on:
   push:
-    branches:
-      - main
+    branches: [ "main" ]
+  workflow_dispatch:
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment: production
+
+    env:
+      SSH_USER: ${{ secrets.SSH_USER }}             # e.g. ubuntu
+      SSH_HOST: ${{ secrets.SSH_HOST }}             # e.g. 3.239.171.243
+      APP_DIR: "/home/${{ secrets.SSH_USER }}/flask-app"
+      BRANCH: "main"
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Prepare SSH key
+      - name: Setup SSH
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/aws-key
-          chmod 600 ~/.ssh/aws-key
+          chmod 700 ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "${SSH_HOST}" >> ~/.ssh/known_hosts 2>/dev/null || true
+          chmod 644 ~/.ssh/known_hosts
 
-      - name: Add Bastion host to known_hosts
+      - name: Test SSH connection
         run: |
-          ssh-keyscan -H ${{ secrets.BASTION_PUBLIC_IP }} >> ~/.ssh/known_hosts
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+            "${SSH_USER}@${SSH_HOST}" 'echo "SSH OK on $(hostname)"'
 
-      - name: SSH into Bastion and deploy to Private EC2
+      - name: Deploy on server
         run: |
-          ssh -i ~/.ssh/aws-key -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.BASTION_PUBLIC_IP }} << 'EOF'
-            ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.PRIVATE_EC2_IP }} << 'INNER_EOF'
-              cd ~/flask-app
-              docker compose down
-              docker compose up -d --build
-            INNER_EOF
-          EOF
+          ssh "${SSH_USER}@${SSH_HOST}" bash -lc '
+            set -euo pipefail
+            cd "${APP_DIR}"
+            if [ ! -d .git ]; then
+              echo "Repo not found at ${APP_DIR}, cloning..."
+              git clone "${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY}" "${APP_DIR}" || true
+              cd "${APP_DIR}"
+            fi
+            git fetch --all --prune
+            git reset --hard "origin/${BRANCH}"
+
+            # Python virtualenv example:
+            # if [ ! -d .venv ]; then python3 -m venv .venv; fi
+            # source .venv/bin/activate
+            # pip install -U pip
+            # pip install -r requirements.txt
+
+            # systemd example:
+            # sudo systemctl daemon-reload
+            # sudo systemctl restart flask-app.service
+            # sudo systemctl --no-pager -l status flask-app.service
+
+            # Docker example:
+            # docker compose pull
+            # docker compose up -d --remove-orphans
+          '
